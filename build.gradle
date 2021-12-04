@@ -1,0 +1,184 @@
+/*
+ * Copyright 2018 The Data Transfer Project Authors.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ * https://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+/**
+ * Gradle build script for the Data Transfer Project.
+ *
+ * Try on *Nix:
+ *
+ * ./gradlew clean jar
+ *
+ * Or on Windows:
+ *
+ * gradlew clean jar
+ *
+ * To build with a cloud extension type, use:
+ *
+ * ./gradlew -PcloudType=<type> clean check shadowJar
+ *
+ * Where <type> is "google", "microsoft", or another provider in extensions/cloud.
+ *
+ * To specify whether to use a local or host installation of Node to build the client web app, use: "-PnodeType=local"
+ * (default) or "-PnodeType=host"
+ *
+ *
+ * Note that if you add a submodule and want it published with official releases, add the 'maven-publish' plugin to the submodule configuration.
+ */
+import org.eclipse.jgit.api.Git
+import org.eclipse.jgit.lib.RepositoryBuilder
+
+buildscript {
+    repositories {
+        jcenter()
+    }
+    dependencies {
+        classpath 'org.eclipse.jgit:org.eclipse.jgit:5.2.1.201812262042-r'
+    }
+}
+
+plugins {
+    id 'java'
+    id 'maven'
+    id 'signing'
+}
+
+repositories {
+    mavenLocal();
+    mavenCentral();
+}
+
+dependencies {
+    implementation('org.eclipse.jgit:org.eclipse.jgit:5.2.1.201812262042-r')
+}
+
+ext.nodeType = hasProperty('nodeType') ? nodeType : 'local'
+ext.cloudType = hasProperty('cloudType') ? cloudType : 'local'
+println "Node installation: ${ext.nodeType}, Cloud type: ${ext.cloudType}"
+
+setGitVersion()
+
+def sourceProjects() {
+    // define projects containing source code
+    return subprojects.findAll { new File(it.projectDir, 'src').exists() }
+}
+
+configure(sourceProjects()) {
+    repositories {
+        jcenter()
+    }
+
+    apply plugin: 'java'
+
+    group = "${projectGroup}"
+    version = "${projectVersion}"
+
+    sourceCompatibility = 1.8
+
+    dependencies {
+        compile "com.fasterxml.jackson.core:jackson-annotations:${jacksonVersion}"
+        compile "com.fasterxml.jackson.datatype:jackson-datatype-jsr310:${jacksonVersion}"
+        compile "com.google.guava:guava:${guavaVersion}"
+
+        testCompile project(":portability-test-utilities")
+        testCompile "junit:junit:${junitVersion}"
+        testCompile "com.google.truth:truth:0.39"
+    }
+
+    task sourcesJar(type: Jar) {
+        classifier = 'sources'
+        from sourceSets.main.allJava
+    }
+
+    task javadocJar(type: Jar) {
+        classifier = 'javadoc'
+        from "../notice/javadoc/README.md"
+    }
+}
+
+def addCloudExtensionDependency(proj) {
+    proj.dependencies { compile project(":extensions:cloud:portability-cloud-${proj.rootProject.ext.cloudType}") }
+}
+
+/**
+ * Configures the project to publish Maven artifacts to Maven Central.
+ */
+def configurePublication(Project project) {
+    project.artifacts {
+        archives project.javadocJar, project.sourcesJar
+    }
+
+
+    // Configure artifact publication
+    project.uploadArchives {
+        repositories {
+            mavenDeployer {
+                beforeDeployment { MavenDeployment deployment -> signing.signPom(deployment) }
+
+                repository(url: "https://oss.sonatype.org/service/local/staging/deploy/maven2/") {
+                    authentication(userName: hasProperty('ossrhUsername') ? ossrhUsername : '', password: hasProperty('ossrhPassword') ? ossrhPassword : '')
+                }
+
+                snapshotRepository(url: "https://oss.sonatype.org/content/repositories/snapshots/") {
+                    authentication(userName: hasProperty('ossrhUsername') ? ossrhUsername : '', password: hasProperty('ossrhPassword') ? ossrhPassword : '')
+                }
+
+                pom.project {
+                    name 'DTP'
+                    packaging 'jar'
+                    description 'The Data Transfer Project'
+                    url 'https://datatransferproject.dev/'
+
+                    scm {
+                        url 'https://github.com/google/data-transfer-project'
+                        developerConnection 'scm:git:ssh://git@github.com:google/data-transfer-project.git'
+                        connection 'scm:git:git://github.com/google/data-transfer-project.git'
+                    }
+
+                    licenses {
+                        license {
+                            name 'Apache 2.0'
+                            url 'https://www.apache.org/licenses/LICENSE-2.0.html'
+                            distribution 'repo'
+                        }
+                    }
+
+                    developers {
+                        developer {
+                            id 'dtp'
+                            name 'Data Transfer Project'
+                            email "portability-maintainers@googlegroups.com"
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if (project.hasProperty("signing.keyId")) {
+        project.signing {
+            sign project.configurations.archives
+        }
+    }
+}
+
+
+def setGitVersion() {
+    def repo = new RepositoryBuilder().setGitDir(new File(project.rootDir, '/.git')).readEnvironment().build()
+
+    def version = repo.findRef('HEAD').getObjectId().name
+    def clean = Git.wrap(repo).status().call().isClean()
+    ext.gitVersion = version + (clean ? '' : '.modified')
+}
+
